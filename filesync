@@ -1,6 +1,6 @@
 #!/bin/bash
 
-declare -r sync_comm="rsync -az --update"
+declare -r sync_comm="rsync -avz"
 declare -r metadir='.fsync'
 
 _do_init() {
@@ -44,7 +44,7 @@ _do_sync() {
 	if echo "$remote_path" | grep ':' >/dev/null; then
 		remote_host="${remote_path%%:*}"
 		remote_host_path="${remote_path#*:}"
-		ssh "$remote_host" "mkdir -p $remote_host_path"
+		"$dry_run" || ssh "$remote_host" "mkdir -p $remote_host_path"
 		"$verbose" && echo "[Debug] Created remote path"
 	fi
 
@@ -57,16 +57,22 @@ _do_sync() {
 }
 
 _run_sync() {
+	remote_host="${remote_path%%:*}"
+	remote_host_path="${remote_path#*:}"
 	"$verbose" && echo "[Debug] Running pull..."
 	"$verbose" && echo "[Debug] -> $sync_comm $exclude \"$remote_path/\" \"$target\""
-	if ! $sync_comm $exclude "$remote_path/" "$target"; then
+	rsync -az "$target/.fsync/last" "$remote_path/fsync-last"
+	if ! ("$dry_run" || $sync_comm $exclude "$remote_path/" \
+		--update \
+		--files-from=<(ssh "$remote_host" "cd $remote_host_path && find . -type f -newer /tmp/fsync-last") \
+		"$target"); then
 		echo "Error: failed to pull changes" >&2
 		return 1
 	fi
 
 	"$verbose" && echo "[Debug] Running push..."
 	"$verbose" && echo "[Debug] -> $sync_comm $exclude \"$target/\" \"$remote_path\""
-	if ! $sync_comm $exclude "$target/" "$remote_path"; then
+	if ! ("$dry_run" || $sync_comm $exclude --delete "$target/" "$remote_path"); then
 		echo "Error: fail to push changes" >&2
 		return 1
 	fi
@@ -74,13 +80,17 @@ _run_sync() {
 
 declare mode="sync"
 declare init_remote
+declare dry_run=false
 declare verbose=false
 
 while [[ $# -ne 0 ]]; do
 	case "$mode" in
 		sync)
 			case "$1" in
-				-d|--debug)
+				-n|--dry-run)
+					dry_run=true
+					;;
+				-v|--verbose)
 					verbose=true
 					;;
 				-h|--help)
@@ -89,7 +99,8 @@ while [[ $# -ne 0 ]]; do
 					printf "  %-8s %s\n" "init" "initialize a new filesync directory"
 					printf "\n"
 					printf "Options:\n"
-					printf "  %-28s %s\n" "-d, --debug" "enable verbose debug messages"
+					printf "  %-28s %s\n" "-n, --dry-run" "do not transfer any files"
+					printf "  %-28s %s\n" "-v, --verbose" "enable verbose debug messages"
 					printf "  %-28s %s\n" "-h, --help" "display this text"
 					exit 0
 					;;
